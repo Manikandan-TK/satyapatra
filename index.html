@@ -173,11 +173,7 @@
     padding:14px 18px;border-radius:2px;font-size:14px;font-weight:500;
     margin-bottom:24px;
   }
-  .status-waiting{background:rgba(156,122,60,0.13);border:1px solid var(--brass);color:#6b501f;}
   .status-locked{background:rgba(63,107,79,0.13);border:1px solid var(--verified);color:var(--verified);}
-  .stamp{
-    width:108px;height:108px;flex:0 0 auto;position:relative;
-  }
   .qr-box{
     background:#fdfcf7;padding:14px;display:inline-block;
     border:1px solid var(--line-strong);margin-top:12px;
@@ -864,18 +860,23 @@ async function handleLock(caseId, role, schema){
   // Save any attached supporting documents and fold their hashes into the
   // answers object — this is the same object covered by the declaration
   // hash below, so a document swapped in later breaks that hash too.
+  const docFields = [];
   for(const sec of schema){
     for(const f of sec.fields){
-      if(f.verifiable && pendingDocs[f.id]){
-        const doc = pendingDocs[f.id];
-        const docHash = await sha256(doc.dataUrl);
-        const savedOk = await saveDoc(caseId, role, f.id, { mime: doc.mime, dataUrl: doc.dataUrl, filename: doc.filename, hash: docHash });
-        if(!savedOk){ alert('Could not upload one of the attached documents — please try again.'); return; }
-        answers[f.id].hasDoc = true;
-        answers[f.id].docHash = docHash;
-        answers[f.id].docFilename = doc.filename;
-      }
+      if(f.verifiable && pendingDocs[f.id]) docFields.push(f);
     }
+  }
+  const docResults = await Promise.all(docFields.map(async (f)=>{
+    const doc = pendingDocs[f.id];
+    const docHash = await sha256(doc.dataUrl);
+    const savedOk = await saveDoc(caseId, role, f.id, { mime: doc.mime, dataUrl: doc.dataUrl, filename: doc.filename, hash: docHash });
+    return { fieldId: f.id, savedOk, docHash, filename: doc.filename };
+  }));
+  for(const r of docResults){
+    if(!r.savedOk){ alert('Could not upload one of the attached documents — please try again.'); return; }
+    answers[r.fieldId].hasDoc = true;
+    answers[r.fieldId].docHash = r.docHash;
+    answers[r.fieldId].docFilename = r.filename;
   }
 
   const references = [
