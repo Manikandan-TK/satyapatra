@@ -6,6 +6,7 @@ import { Redis } from '@upstash/redis';
 // depending on how the integration was installed. We check both so this
 // works regardless of which one shows up in your project's Environment
 // Variables settings.
+// -------------------
 const redis = new Redis({
   url: process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL,
   token: process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN,
