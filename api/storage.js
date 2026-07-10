@@ -20,27 +20,62 @@ const redis = new Redis({
 const MAX_KEY_LEN = 200;
 const MAX_VALUE_BYTES = 5_000_000; // 5MB, matching the original storage contract
 
+// SECURITY: Rate limiting — 60 requests per minute per IP, using the same
+// Redis instance. Prevents abuse, wallet-drain attacks, and brute-force
+// enumeration of case IDs.
+const RATE_LIMIT_WINDOW = 60;  // seconds
+const RATE_LIMIT_MAX    = 60;  // max requests per window
+
+// PRIVACY: Auto-expire all case and document data after 30 days of
+// inactivity. Every read or write refreshes the TTL, so active cases
+// stay alive, but abandoned ones are cleaned up automatically.
+const KEY_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
+
 export default async function handler(req, res) {
   try {
-    if (req.method === 'GET') {
-      const { key, prefix } = req.query;
+    // --- Rate limiting (per-IP, sliding window via Redis) ---
+    const ip = (req.headers['x-forwarded-for'] || req.headers['x-real-ip'] || 'unknown').split(',')[0].trim();
+    const rlKey = `rl:${ip}`;
+    const current = await redis.incr(rlKey);
+    if (current === 1) await redis.expire(rlKey, RATE_LIMIT_WINDOW);
+    if (current > RATE_LIMIT_MAX) {
+      res.setHeader('Retry-After', String(RATE_LIMIT_WINDOW));
+      return res.status(429).json({ error: 'too many requests — try again shortly' });
+    }
 
-      if (prefix !== undefined) {
-        const keys = await redis.keys(`${prefix}*`);
-        return res.status(200).json({ keys });
+    const isPost = req.method === 'POST';
+    const key = isPost ? (req.body || {}).key : req.query.key;
+
+    // Block unused prefix keys listing to prevent enumeration of cases
+    if (req.method === 'GET' && req.query.prefix !== undefined) {
+      return res.status(400).json({ error: 'listing keys is disabled for security' });
+    }
+
+    // Validate that the key matches expected patterns:
+    // 1. case:<caseId>
+    // 2. doc:<caseId>:<role>:<fieldId>
+    if (['GET', 'POST', 'DELETE'].includes(req.method)) {
+      if (!key) {
+        return res.status(400).json({ error: 'key is required' });
       }
+      if (!/^(case:[a-zA-Z0-9]{7,32}|doc:[a-zA-Z0-9]{7,32}:[AB]:[a-zA-Z0-9]+)$/.test(key)) {
+        return res.status(400).json({ error: 'invalid key format' });
+      }
+    }
 
-      if (!key) return res.status(400).json({ error: 'key is required' });
+    if (req.method === 'GET') {
       const value = await redis.get(key);
       if (value === null || value === undefined) {
         return res.status(404).json({ error: 'not found' });
       }
+      // Refresh TTL on read so active cases stay alive
+      await redis.expire(key, KEY_TTL_SECONDS);
       return res.status(200).json({ key, value });
     }
 
     if (req.method === 'POST') {
-      const { key, value } = req.body || {};
-      if (!key || typeof value !== 'string') {
+      const { value } = req.body || {};
+      if (typeof value !== 'string') {
         return res.status(400).json({ error: 'key and a string value are required' });
       }
       if (key.length > MAX_KEY_LEN) {
@@ -49,13 +84,11 @@ export default async function handler(req, res) {
       if (Buffer.byteLength(value, 'utf8') > MAX_VALUE_BYTES) {
         return res.status(400).json({ error: 'value exceeds 5MB limit' });
       }
-      await redis.set(key, value);
+      await redis.set(key, value, { ex: KEY_TTL_SECONDS });
       return res.status(200).json({ key, value });
     }
 
     if (req.method === 'DELETE') {
-      const { key } = req.query;
-      if (!key) return res.status(400).json({ error: 'key is required' });
       await redis.del(key);
       return res.status(200).json({ key, deleted: true });
     }

@@ -399,7 +399,12 @@ function getHashParams(){
   // or similar character into our "doc:{caseId}:{role}:{fieldId}" storage
   // key scheme and collide with another case's stored documents.
   const caseId = rawCase ? rawCase.replace(/[^A-Za-z0-9]/g, '').slice(0, 32) : null;
-  return { caseId, role: params.get('role') };
+  // SECURITY: Whitelist the role parameter to only 'A' or 'B'. A crafted
+  // URL with role=A:crimCase could manipulate storage keys (e.g.
+  // doc:{caseId}:A:crimCase:{fieldId}) if passed through unsanitized.
+  const rawRole = params.get('role');
+  const role = (rawRole === 'A' || rawRole === 'B') ? rawRole : null;
+  return { caseId, role };
 }
 
 function setHash(caseId, role){
@@ -535,10 +540,12 @@ async function viewDocument(caseId, role, fieldId, fieldLabel, expectedHash){
     const res = await window.storage.get(docStorageKey(caseId, role, fieldId), true);
     const doc = JSON.parse(res.value);
     const body = document.getElementById('docLightboxBody');
-    if(doc.mime && doc.mime.startsWith('image/')){
-      body.innerHTML = `<img src="${escapeHtml(doc.dataUrl)}" alt="${escapeHtml(fieldLabel)}">`;
+    const isSafeUrl = doc.dataUrl && (doc.dataUrl.startsWith('data:image/') || doc.dataUrl.startsWith('data:application/pdf'));
+    const safeUrl = isSafeUrl ? doc.dataUrl : '#';
+    if(doc.mime && doc.mime.startsWith('image/') && isSafeUrl){
+      body.innerHTML = `<img src="${escapeHtml(safeUrl)}" alt="${escapeHtml(fieldLabel)}">`;
     } else {
-      body.innerHTML = `<a href="${escapeHtml(doc.dataUrl)}" download="${escapeHtml(doc.filename||'document')}" class="btn-primary">Download document</a>`;
+      body.innerHTML = `<a href="${escapeHtml(safeUrl)}" download="${escapeHtml(doc.filename||'document')}" class="btn-primary">Download document</a>`;
     }
     const recomputedHash = await sha256(doc.dataUrl);
     const statusEl = document.getElementById('docVerifyStatus');
@@ -917,6 +924,10 @@ function renderShare(caseId, role, caseData){
         <a class="whatsapp-btn" href="${waLink}" target="_blank" rel="noopener">Send via WhatsApp</a>
       </div>
       <p class="note">No phone number is stored by this app — the WhatsApp link opens your own WhatsApp so you choose who to send it to.</p>
+    </div>
+    <div class="paper-panel" style="background:rgba(163,38,56,0.06);border-color:var(--seal);">
+      <h2 class="section-title" style="color:var(--seal);font-size:16px;">⚠ Keep this link private</h2>
+      <p style="font-size:13px;color:var(--ink-soft);margin:4px 0 0;">This link is the only key to your declaration — <b style="color:var(--ink);">anyone who has it can view, complete, or access the case data</b>. Do not post it on social media, public forums, or anywhere it could be seen by unintended parties. Share it only via a private message to the other family. Case data is automatically deleted after 30 days of inactivity.</p>
     </div>
     <div class="paper-panel" id="waitingPanel">
       <h2 class="section-title">Status</h2>
